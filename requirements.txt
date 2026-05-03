@@ -1,2 +1,5 @@
 requests>=2.31.0
 tqdm>=4.66.0
+
+# Optional: only needed for --browser mode
+# playwright>=1.44.0

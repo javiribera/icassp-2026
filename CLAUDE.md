@@ -51,7 +51,8 @@ apply. All calls reuse the single open page; no navigation between pages.
 `_JS_FETCH` is the JavaScript template passed to `page.evaluate()`.
 Use this when the REST API returns 403.
 
-Both modes produce the same two output files via `flatten()` + `save()`.
+Both modes produce `output/papers.json` via `structure()` + `save()`.
+`structure()` converts a raw API record into `{title, abstract, authors: [...], doi, url}`.
 
 ## Key Details
 

@@ -6,10 +6,20 @@ on IEEE Xplore (4 589 papers).
 
 ## Output
 
-| File | Description |
-|------|-------------|
-| `output/papers.json` | Raw API response records (one object per paper) |
-| `output/papers.csv` | Flat table: title, authors, DOI, abstract, keywords, URL |
+`output/papers.json` — a JSON array, one object per paper:
+
+```json
+[
+  {
+    "title": "...",
+    "abstract": "...",
+    "authors": ["Alice Smith", "Bob Jones"],
+    "doi": "10.1109/ICASSP...",
+    "url": "https://ieeexplore.ieee.org/document/..."
+  },
+  ...
+]
+```
 
 ## Two modes
 

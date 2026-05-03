@@ -15,12 +15,11 @@ Strategy
    responses by intercepting network traffic.
    Requires:  pip install playwright && playwright install chromium
 
-Output: output/papers.json  (raw API records)
-        output/papers.csv   (flat table)
+Output: output/papers.json  — array of objects with keys:
+          title, abstract, authors (list), doi, url
 """
 
 import argparse
-import csv
 import json
 import logging
 import sys
@@ -195,23 +194,13 @@ def scrape_browser(delay: float) -> list[dict]:
 # Output helpers
 # ---------------------------------------------------------------------------
 
-def flatten(rec: dict) -> dict:
-    authors = "; ".join(a.get("preferredName", "") for a in rec.get("authors", []))
+def structure(rec: dict) -> dict:
     article_number = rec.get("articleNumber", "")
-    keywords = "; ".join(
-        kw if isinstance(kw, str) else kw.get("kwd", "")
-        for group in rec.get("keywords", [])
-        for kw in group.get("kwd", [])
-    )
     return {
         "title": rec.get("articleTitle", ""),
-        "authors": authors,
-        "doi": rec.get("doi", ""),
-        "article_number": article_number,
-        "start_page": rec.get("startPage", ""),
-        "end_page": rec.get("endPage", ""),
         "abstract": rec.get("abstract", ""),
-        "keywords": keywords,
+        "authors": [a.get("preferredName", "") for a in rec.get("authors", [])],
+        "doi": rec.get("doi", ""),
         "url": f"https://ieeexplore.ieee.org/document/{article_number}",
     }
 
@@ -219,18 +208,12 @@ def flatten(rec: dict) -> dict:
 def save(records: list[dict], output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    json_path = output_dir / "papers.json"
-    json_path.write_text(json.dumps(records, indent=2, ensure_ascii=False))
-    log.info(f"Raw JSON → {json_path}")
+    papers = [structure(r) for r in records]
 
-    flat = [flatten(r) for r in records]
-    csv_path = output_dir / "papers.csv"
-    with csv_path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=list(flat[0].keys()))
-        writer.writeheader()
-        writer.writerows(flat)
-    log.info(f"Flat CSV → {csv_path}")
-    log.info(f"Done. {len(records)} papers saved.")
+    json_path = output_dir / "papers.json"
+    json_path.write_text(json.dumps(papers, indent=2, ensure_ascii=False))
+    log.info(f"JSON → {json_path}")
+    log.info(f"Done. {len(papers)} papers saved.")
 
 
 # ---------------------------------------------------------------------------

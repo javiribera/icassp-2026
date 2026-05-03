@@ -52,7 +52,15 @@ apply. All calls reuse the single open page; no navigation between pages.
 Use this when the REST API returns 403.
 
 Both modes produce `output/papers.json` via `structure()` + `save()`.
-`structure()` converts a raw API record into `{title, abstract, authors: [...], doi, url}`.
+`structure()` converts a raw API record into
+`{title, abstract, authors: [{name, affiliation}], doi, url}`.
+
+**Affiliation enrichment**: `/rest/search` does not include author affiliations.
+After the search scrape, the script fetches `/rest/document/{articleNumber}/`
+for every paper to get per-author affiliation strings.
+- REST mode: `fetch_affiliations_api()` — `ThreadPoolExecutor` with `--workers` (default 8)
+- Browser mode: `_browser_fetch_affiliations()` — batched `Promise.all()` in JS context, `AFF_BATCH_SIZE=50` papers per batch
+- Skip with `--no-affiliations`
 
 ## Key Details
 

@@ -13,13 +13,19 @@ on IEEE Xplore (4 589 papers).
   {
     "title": "...",
     "abstract": "...",
-    "authors": ["Alice Smith", "Bob Jones"],
+    "authors": [
+      {"name": "Alice Smith", "affiliation": "MIT, Cambridge, MA, USA"},
+      {"name": "Bob Jones",   "affiliation": "Stanford University, CA, USA"}
+    ],
     "doi": "10.1109/ICASSP...",
     "url": "https://ieeexplore.ieee.org/document/..."
-  },
-  ...
+  }
 ]
 ```
+
+Author affiliations require an extra `/rest/document/{id}/` call per paper
+(~4 589 requests). This runs concurrently after the initial scrape and is on
+by default. Pass `--no-affiliations` to skip it.
 
 ## Two modes
 
@@ -82,6 +88,8 @@ docker run --rm -v "$(pwd)/output:/app/output" icassp-scraper:browser
 | `--browser` | off | Use Playwright instead of the REST API |
 | `--cookie STRING` | — | Session cookie (REST API mode only) |
 | `--delay SECONDS` | 1.5 | Pause between requests |
+| `--workers N` | 8 | Concurrent workers for affiliation fetching (REST mode) |
+| `--no-affiliations` | off | Skip affiliation fetching (faster) |
 | `--output DIR` | `./output` | Output directory |
 
 ## Notes

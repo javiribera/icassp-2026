@@ -62,10 +62,46 @@ python scraper.py --browser
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.txt          # runtime only
+pip install -r requirements-dev.txt      # adds ruff + mypy for local dev
 # For browser mode only:
 # pip install playwright && playwright install chromium
 ```
+
+## Lint and type-check
+
+```bash
+ruff check scraper.py
+python -m mypy scraper.py --ignore-missing-imports
+```
+
+## Google Cloud Run
+
+Output (`papers.json`) is written to a GCS bucket mounted at `/app/output`.
+
+**One-time setup:**
+```bash
+gcloud artifacts repositories create icassp \
+  --repository-format=docker --location=us-central1
+gcloud storage buckets create gs://MY_BUCKET --location=us-central1
+```
+
+**Deploy and run:**
+```bash
+gcloud builds submit --config cloudbuild.yaml \
+  --substitutions _GCS_BUCKET=MY_BUCKET
+```
+
+Cloud Build runs lint → typecheck → docker build → push → deploy Cloud Run Job → execute. `papers.json` appears in `gs://MY_BUCKET/` when done.
+
+Available substitutions (pass via `--substitutions KEY=VALUE`):
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `_REGION` | `us-central1` | GCP region |
+| `_AR_REPO` | `icassp` | Artifact Registry repo name |
+| `_JOB_NAME` | `icassp-scraper` | Cloud Run Job name |
+| `_GCS_BUCKET` | *(required)* | GCS bucket for `papers.json` |
 
 ## Docker
 

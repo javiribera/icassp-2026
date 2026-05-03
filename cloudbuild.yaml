@@ -1,0 +1,100 @@
+# Google Cloud Build — build, deploy, and run the ICASSP scraper on Cloud Run.
+#
+# Prerequisites (run once):
+#   gcloud artifacts repositories create $_AR_REPO \
+#     --repository-format=docker --location=$_REGION
+#   gcloud storage buckets create gs://$_GCS_BUCKET --location=$_REGION
+#
+# Usage:
+#   gcloud builds submit --config cloudbuild.yaml \
+#     --substitutions _GCS_BUCKET=my-bucket-name
+#
+# The Cloud Run Job mounts $_GCS_BUCKET at /app/output, so papers.json
+# is written directly to GCS and persists after the container exits.
+
+steps:
+
+  # ── 1. Lint ────────────────────────────────────────────────────────────────
+  - id: lint
+    name: python:3.12-slim
+    entrypoint: sh
+    args:
+      - -c
+      - pip install ruff --quiet && ruff check scraper.py
+
+  # ── 2. Type-check ──────────────────────────────────────────────────────────
+  - id: typecheck
+    name: python:3.12-slim
+    entrypoint: sh
+    args:
+      - -c
+      - pip install mypy types-requests --quiet && python -m mypy scraper.py --ignore-missing-imports
+    waitFor: ['-']   # run in parallel with lint
+
+  # ── 3. Build Docker image (browser target) ─────────────────────────────────
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --target=browser
+      - --tag=$_REGION-docker.pkg.dev/$PROJECT_ID/$_AR_REPO/$_JOB_NAME:$SHORT_SHA
+      - --tag=$_REGION-docker.pkg.dev/$PROJECT_ID/$_AR_REPO/$_JOB_NAME:latest
+      - --cache-from=$_REGION-docker.pkg.dev/$PROJECT_ID/$_AR_REPO/$_JOB_NAME:latest
+      - .
+    waitFor: [lint, typecheck]
+
+  # ── 4. Push to Artifact Registry ───────────────────────────────────────────
+  - id: push-sha
+    name: gcr.io/cloud-builders/docker
+    args: [push, "$_REGION-docker.pkg.dev/$PROJECT_ID/$_AR_REPO/$_JOB_NAME:$SHORT_SHA"]
+    waitFor: [build]
+
+  - id: push-latest
+    name: gcr.io/cloud-builders/docker
+    args: [push, "$_REGION-docker.pkg.dev/$PROJECT_ID/$_AR_REPO/$_JOB_NAME:latest"]
+    waitFor: [build]
+
+  # ── 5. Deploy Cloud Run Job ────────────────────────────────────────────────
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: gcloud
+    args:
+      - run
+      - jobs
+      - deploy
+      - $_JOB_NAME
+      - --image=$_REGION-docker.pkg.dev/$PROJECT_ID/$_AR_REPO/$_JOB_NAME:$SHORT_SHA
+      - --region=$_REGION
+      - --task-count=1
+      - --max-retries=2
+      - --memory=2Gi
+      - --cpu=2
+      - --task-timeout=3600s
+      - --execution-environment=gen2
+      - --add-volume=name=output,type=cloud-storage,bucket=$_GCS_BUCKET
+      - --add-volume-mount=volume=output,mount-path=/app/output
+    waitFor: [push-sha]
+
+  # ── 6. Execute and wait ────────────────────────────────────────────────────
+  - id: execute
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: gcloud
+    args:
+      - run
+      - jobs
+      - execute
+      - $_JOB_NAME
+      - --region=$_REGION
+      - --wait
+    waitFor: [deploy]
+
+substitutions:
+  _REGION: us-central1
+  _AR_REPO: icassp
+  _JOB_NAME: icassp-scraper
+  # _GCS_BUCKET has no default — pass it via --substitutions _GCS_BUCKET=my-bucket
+
+timeout: 7200s   # 2 h: up to ~30 min build + ~90 min scrape
+
+options:
+  logging: CLOUD_LOGGING_ONLY

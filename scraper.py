@@ -211,7 +211,12 @@ def scrape_browser(delay: float, fetch_affs: bool) -> tuple[list[dict], dict[str
         sys.exit(1)
 
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
+        browser = pw.chromium.launch(
+            headless=True,
+            # Required when running as root (Cloud Run) or in containers with
+            # limited /dev/shm (default in most container runtimes).
+            args=["--no-sandbox", "--disable-dev-shm-usage"],
+        )
         context = browser.new_context(user_agent=BASE_HEADERS["User-Agent"], locale="en-US")
         bpage = context.new_page()
 

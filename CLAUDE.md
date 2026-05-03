@@ -11,9 +11,13 @@ and writes results to `output/papers.json` and `output/papers.csv`.
 ## Commands
 
 ```bash
-# Install (REST API mode only)
+# Install
 python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt      # includes ruff + mypy
+
+# Lint and type-check (must pass before committing)
+ruff check scraper.py
+python -m mypy scraper.py --ignore-missing-imports
 
 # Run — REST API mode (fast, ~1 min)
 python scraper.py
@@ -31,6 +35,17 @@ docker run --rm -v "$(pwd)/output:/app/output" icassp-scraper:api
 # Docker — browser mode (~800 MB image, Chromium included)
 docker build --target browser -t icassp-scraper:browser .
 docker run --rm -v "$(pwd)/output:/app/output" icassp-scraper:browser
+```
+
+## Google Cloud Run
+
+`cloudbuild.yaml` runs six steps in order: lint → typecheck (parallel with lint) → docker build (`browser` target) → push (sha + latest tags) → `gcloud run jobs deploy` → `gcloud run jobs execute --wait`.
+
+The Cloud Run Job mounts a GCS bucket at `/app/output` via `--add-volume type=cloud-storage` (requires `--execution-environment=gen2`). `papers.json` is written there and persists after the container exits.
+
+One-time setup: create the Artifact Registry repo and GCS bucket. Then:
+```bash
+gcloud builds submit --config cloudbuild.yaml --substitutions _GCS_BUCKET=my-bucket
 ```
 
 ## Architecture

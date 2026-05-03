@@ -113,6 +113,35 @@ def scrape_api(delay: float, cookie: str | None) -> list[dict]:
 # Playwright / browser mode
 # ---------------------------------------------------------------------------
 
+# JavaScript run inside the browser context via page.evaluate().
+# fetch() inherits the browser's cookies and TLS fingerprint, so IEEE Xplore
+# sees it as a first-party same-origin request — no IP blocking applies.
+_JS_FETCH = """
+async ([apiBase, pubNum, pageNum, rows]) => {
+    const params = new URLSearchParams({
+        newsearch:            'true',
+        queryText:            '',
+        pageNumber:           String(pageNum),
+        rowsPerPage:          String(rows),
+        'publication-number': pubNum,
+    });
+    const resp = await fetch(apiBase + '?' + params, {
+        headers: {
+            'Accept':           'application/json, text/plain, */*',
+            'X-Requested-With': 'XMLHttpRequest',
+        },
+        credentials: 'include',
+    });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    return resp.json();
+}
+"""
+
+
+def _browser_fetch(page, page_num: int) -> dict:
+    return page.evaluate(_JS_FETCH, [API_BASE, PUBLICATION_NUMBER, page_num, ROWS_PER_PAGE])
+
+
 def scrape_browser(delay: float) -> list[dict]:
     try:
         from playwright.sync_api import sync_playwright
@@ -123,40 +152,39 @@ def scrape_browser(delay: float) -> list[dict]:
         )
         sys.exit(1)
 
-    records: list[dict] = []
-    total: int = 0
-    page_num: int = 1
-
-    def _handle_response(response):
-        nonlocal total
-        if "rest/search" in response.url and "publication-number" in response.url:
-            try:
-                data = response.json()
-                if "totalRecords" in data:
-                    total = data["totalRecords"]
-                records.extend(data.get("records", []))
-            except Exception:
-                pass
-
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
         context = browser.new_context(
             user_agent=BASE_HEADERS["User-Agent"],
             locale="en-US",
         )
-        page = context.new_page()
-        page.on("response", _handle_response)
+        bpage = context.new_page()
 
-        log.info("Browser mode — loading proceedings page (page 1)...")
-        page.goto(CONF_URL, wait_until="networkidle", timeout=60_000)
+        # Load the proceedings page once — this establishes cookies/session.
+        log.info("Browser mode — loading proceedings page to establish session...")
+        bpage.goto(CONF_URL, wait_until="networkidle", timeout=60_000)
+
+        # All API calls run as fetch() inside the browser's JS context.
+        log.info("Fetching page 1 via in-browser fetch()...")
+        first = _browser_fetch(bpage, 1)
+        total = first.get("totalRecords", 0)
+        if not total:
+            log.error(
+                "totalRecords = 0.\n"
+                "  The page may not have loaded correctly, or the API path has changed.\n"
+                "  Try running with headless=False to inspect the browser visually."
+            )
+            browser.close()
+            sys.exit(1)
+
         log.info(f"Total papers: {total}")
-
+        records: list[dict] = first.get("records", [])
         total_pages = (total + ROWS_PER_PAGE - 1) // ROWS_PER_PAGE
 
-        for page_num in tqdm(range(2, total_pages + 1), desc="Navigating pages"):
+        for page_num in tqdm(range(2, total_pages + 1), desc="Fetching pages"):
             time.sleep(delay)
-            page_url = f"{CONF_URL}?pageNumber={page_num}"
-            page.goto(page_url, wait_until="networkidle", timeout=60_000)
+            data = _browser_fetch(bpage, page_num)
+            records.extend(data.get("records", []))
 
         browser.close()
 

@@ -24,9 +24,13 @@ python scraper.py --delay 2.0 --output data/
 pip install playwright && playwright install chromium
 python scraper.py --browser
 
-# Docker (REST API mode)
-docker build -t icassp-scraper .
-docker run --rm -v "$(pwd)/output:/app/output" icassp-scraper
+# Docker — REST API mode (~200 MB image)
+docker build --target api -t icassp-scraper:api .
+docker run --rm -v "$(pwd)/output:/app/output" icassp-scraper:api
+
+# Docker — browser mode (~800 MB image, Chromium included)
+docker build --target browser -t icassp-scraper:browser .
+docker run --rm -v "$(pwd)/output:/app/output" icassp-scraper:browser
 ```
 
 ## Architecture
@@ -38,10 +42,14 @@ docker run --rm -v "$(pwd)/output:/app/output" icassp-scraper
 from the first response, computes page count using `ROWS_PER_PAGE = 100`, then
 paginates with a configurable delay. No headless browser needed.
 
-**Browser mode** (`--browser`): drives headless Chromium via Playwright and
-intercepts the same `/rest/search` XHR responses via `page.on("response", ...)`.
-Use this when the REST API returns 403 from data-centre IPs or without a valid
-session cookie.
+**Browser mode** (`--browser`): loads the proceedings page once in headless
+Chromium to establish a real browser session (cookies, TLS fingerprint), then
+calls `page.evaluate(fetch(...))` from within the browser's JavaScript context
+for every paginated API request. Because `fetch()` runs inside the browser,
+IEEE Xplore sees it as a same-origin first-party request — IP blocking does not
+apply. All calls reuse the single open page; no navigation between pages.
+`_JS_FETCH` is the JavaScript template passed to `page.evaluate()`.
+Use this when the REST API returns 403.
 
 Both modes produce the same two output files via `flatten()` + `save()`.
 

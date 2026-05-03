@@ -51,14 +51,18 @@ pip install -r requirements.txt
 # pip install playwright && playwright install chromium
 ```
 
-## Docker (REST API mode)
+## Docker
 
 ```bash
-docker build -t icassp-scraper .
-docker run --rm -v "$(pwd)/output:/app/output" icassp-scraper
-# With cookie:
-docker run --rm -v "$(pwd)/output:/app/output" icassp-scraper \
+# REST API mode (small image, ~200 MB)
+docker build --target api -t icassp-scraper:api .
+docker run --rm -v "$(pwd)/output:/app/output" icassp-scraper:api
+docker run --rm -v "$(pwd)/output:/app/output" icassp-scraper:api \
   --cookie "JSESSIONID=abc123; ..."
+
+# Browser mode (larger image, ~800 MB — Chromium included)
+docker build --target browser -t icassp-scraper:browser .
+docker run --rm -v "$(pwd)/output:/app/output" icassp-scraper:browser
 ```
 
 ## Options

@@ -1,5 +1,6 @@
 requests>=2.31.0
 tqdm>=4.66.0
 
-# Optional: only needed for --browser mode
+# Browser mode (--browser flag):
+# pip install playwright && playwright install chromium
 # playwright>=1.44.0

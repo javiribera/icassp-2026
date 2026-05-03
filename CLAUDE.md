@@ -62,10 +62,10 @@ Both modes produce the same two output files via `flatten()` + `save()`.
 - Playwright is an optional dependency (not in `requirements.txt`); install it only
   for `--browser` mode.
 
-## Development Branch
+## Git Workflow
 
-Push changes with:
+Always push directly to `main`. Never create a pull request.
 
 ```bash
-git push -u origin <branch-name>
+git push -u origin main
 ```

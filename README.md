@@ -11,14 +11,39 @@ HTML page loads — the button fires a `fetch()` call to the server's internal
 REST endpoint and appends the JSON results to the DOM. The scraper calls that
 same endpoint directly in a loop, bypassing the button entirely.
 
-**The endpoint is undocumented.** It was inferred by inspecting the browser's
-Network tab (DevTools → Network → Fetch/XHR → click "Load More"). The URL,
-parameters, and response field names have never been verified against a real
-response, because the sandbox this code was written in blocks all outbound
-traffic. Before trusting the output, inspect the actual JSON response on your
-machine and confirm that field names like `totalRecords`, `records`,
-`articleTitle`, `authors`, `doi`, `articleNumber` match reality. If they
-differ, update `structure()` in `scraper.py` accordingly.
+### What has been verified
+
+The internal IEEE Xplore REST API is undocumented but has been independently
+observed and used by multiple public projects. Cross-referencing
+[ieee_journal_downloader](https://github.com/FongYoong/ieee_journal_downloader),
+[RSSHub discussions](https://github.com/DIYgod/RSSHub/discussions/8571), and
+other scrapers confirms the following:
+
+| Claim | Status |
+|-------|--------|
+| Base endpoint `ieeexplore.ieee.org/rest/search` | ✅ Confirmed |
+| `rowsPerPage` parameter (max 100) | ✅ Confirmed |
+| Response field `records` (array) | ✅ Confirmed |
+| Response field `totalRecords` | ✅ Confirmed |
+| Response field `articleTitle` | ✅ Confirmed |
+| Response field `articleNumber` | ✅ Confirmed |
+| Response field `doi` | ✅ Confirmed |
+| Response field `abstract` | ✅ Confirmed — **but truncated** (see below) |
+| `authors[].preferredName` | ✅ Confirmed |
+| `authors[].affiliation` | ✅ Confirmed |
+| Document endpoint `/rest/document/{id}/` | ✅ Confirmed |
+| `publication-number` query param for proceedings | ⚠️ Plausible — confirmed for journals as `punumber`, not directly verified for the conference proceedings format |
+| `pageNumber` param | ⚠️ Plausible — alternative endpoints use `startRecord`; not directly confirmed for this endpoint |
+| `newsearch=true` param | ⚠️ Unverified — appears in the URL but its necessity is unknown |
+
+### Abstract truncation
+
+Abstracts returned by the `/rest/search` endpoint are **truncated**
+(confirmed by [RSSHub discussion #8571](https://github.com/DIYgod/RSSHub/discussions/8571)).
+The full abstract is only available from the per-paper document endpoint
+(`/rest/document/{articleNumber}/`). The scraper automatically fetches the
+full abstract during the affiliation enrichment phase. Pass `--no-affiliations`
+only if truncated abstracts are acceptable.
 
 ## Scraping phases
 

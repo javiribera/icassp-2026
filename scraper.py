@@ -120,33 +120,43 @@ def scrape_api(session: requests.Session, delay: float) -> list[dict]:
 # REST API mode — affiliation enrichment (concurrent)
 # ---------------------------------------------------------------------------
 
-def _fetch_doc_affiliations(session: requests.Session, article_number: str) -> list[str]:
+def _fetch_doc_details(session: requests.Session, article_number: str) -> dict:
+    """Return full abstract and per-author affiliations from the document endpoint.
+
+    The /rest/search endpoint truncates abstracts. Full text is only available
+    from /rest/document/{articleNumber}/ — confirmed by real-world scrapers.
+    """
     try:
         resp = session.get(f"{DOC_BASE}/{article_number}/", timeout=30)
         if resp.ok:
-            return [a.get("affiliation", "") for a in resp.json().get("authors", [])]
+            data = resp.json()
+            return {
+                "abstract": data.get("abstract", ""),
+                "affs": [a.get("affiliation", "") for a in data.get("authors", [])],
+            }
     except Exception:
         pass
-    return []
+    return {"abstract": "", "affs": []}
 
 
-def fetch_affiliations_api(
+def fetch_details_api(
     records: list[dict],
     session: requests.Session,
     workers: int,
-) -> dict[str, list[str]]:
-    log.info(f"Fetching affiliations via REST ({len(records)} papers, {workers} workers)...")
+) -> dict[str, dict]:
+    """Fetch full abstract + affiliations from the per-paper document endpoint."""
+    log.info(f"Fetching paper details via REST ({len(records)} papers, {workers} workers)...")
 
-    def _task(rec: dict) -> tuple[str, list[str]]:
+    def _task(rec: dict) -> tuple[str, dict]:
         num = rec.get("articleNumber", "")
-        return num, _fetch_doc_affiliations(session, num)
+        return num, _fetch_doc_details(session, num)
 
-    result: dict[str, list[str]] = {}
+    result: dict[str, dict] = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         futs = [pool.submit(_task, rec) for rec in records]
-        for fut in tqdm(concurrent.futures.as_completed(futs), total=len(records), desc="Affiliations"):
-            num, affs = fut.result()
-            result[num] = affs
+        for fut in tqdm(concurrent.futures.as_completed(futs), total=len(records), desc="Details"):
+            num, details = fut.result()
+            result[num] = details
 
     return result
 
@@ -176,8 +186,9 @@ async ([apiBase, pubNum, pageNum, rows]) => {
 """
 
 # Fetches a batch of document detail endpoints in parallel via Promise.all().
-# Returns an array of per-author affiliation arrays, one entry per article.
-_JS_FETCH_AFFS = """
+# Returns [{abstract, affs}] for each article number in the batch.
+# Abstract from /rest/search is truncated; the full text is here.
+_JS_FETCH_DETAILS = """
 async ([docBase, articleNumbers]) => {
     return Promise.all(articleNumbers.map(async (num) => {
         try {
@@ -186,10 +197,13 @@ async ([docBase, articleNumbers]) => {
                            'X-Requested-With': 'XMLHttpRequest' },
                 credentials: 'include',
             });
-            if (!resp.ok) return [];
+            if (!resp.ok) return {abstract: '', affs: []};
             const data = await resp.json();
-            return (data.authors || []).map(a => a.affiliation || '');
-        } catch { return []; }
+            return {
+                abstract: data.abstract || '',
+                affs: (data.authors || []).map(a => a.affiliation || ''),
+            };
+        } catch { return {abstract: '', affs: []}; }
     }));
 }
 """
@@ -199,11 +213,11 @@ def _browser_fetch_search(bpage, page_num: int) -> dict:
     return bpage.evaluate(_JS_FETCH_SEARCH, [API_BASE, PUBLICATION_NUMBER, page_num, ROWS_PER_PAGE])
 
 
-def _browser_fetch_affiliations(bpage, article_numbers: list[str]) -> list[list[str]]:
-    return bpage.evaluate(_JS_FETCH_AFFS, [DOC_BASE, article_numbers])
+def _browser_fetch_details(bpage, article_numbers: list[str]) -> list[dict]:
+    return bpage.evaluate(_JS_FETCH_DETAILS, [DOC_BASE, article_numbers])
 
 
-def scrape_browser(delay: float, fetch_affs: bool) -> tuple[list[dict], dict[str, list[str]]]:
+def scrape_browser(delay: float, fetch_affs: bool) -> tuple[list[dict], dict[str, dict]]:
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
@@ -243,30 +257,31 @@ def scrape_browser(delay: float, fetch_affs: bool) -> tuple[list[dict], dict[str
             data = _browser_fetch_search(bpage, page_num)
             records.extend(data.get("records", []))
 
-        affiliations_map: dict[str, list[str]] = {}
+        details_map: dict[str, dict] = {}
         if fetch_affs:
-            log.info(f"Fetching affiliations via browser ({len(records)} papers, batch={AFF_BATCH_SIZE})...")
+            log.info(f"Fetching paper details via browser ({len(records)} papers, batch={AFF_BATCH_SIZE})...")
             nums = [r.get("articleNumber", "") for r in records]
-            for i in tqdm(range(0, len(nums), AFF_BATCH_SIZE), desc="Affiliations"):
+            for i in tqdm(range(0, len(nums), AFF_BATCH_SIZE), desc="Details"):
                 batch = nums[i : i + AFF_BATCH_SIZE]
-                aff_lists = _browser_fetch_affiliations(bpage, batch)
-                for num, affs in zip(batch, aff_lists):
-                    affiliations_map[num] = affs
+                batch_details = _browser_fetch_details(bpage, batch)
+                for num, det in zip(batch, batch_details):
+                    details_map[num] = det
                 time.sleep(delay)
 
         browser.close()
 
-    return records, affiliations_map
+    return records, details_map
 
 
 # ---------------------------------------------------------------------------
 # Output
 # ---------------------------------------------------------------------------
 
-def structure(rec: dict, affiliations_map: dict[str, list[str]]) -> dict:
+def structure(rec: dict, details_map: dict[str, dict]) -> dict:
     article_number = rec.get("articleNumber", "")
     raw_authors = rec.get("authors", [])
-    affs = affiliations_map.get(article_number, [])
+    details = details_map.get(article_number, {})
+    affs = details.get("affs", [])
     authors = [
         {
             "name": a.get("preferredName", ""),
@@ -274,18 +289,21 @@ def structure(rec: dict, affiliations_map: dict[str, list[str]]) -> dict:
         }
         for i, a in enumerate(raw_authors)
     ]
+    # Abstract from /rest/search is truncated; prefer the full version from
+    # the document detail endpoint when available.
+    abstract = details.get("abstract") or rec.get("abstract", "")
     return {
         "title": rec.get("articleTitle", ""),
-        "abstract": rec.get("abstract", ""),
+        "abstract": abstract,
         "authors": authors,
         "doi": rec.get("doi", ""),
         "url": f"https://ieeexplore.ieee.org/document/{article_number}",
     }
 
 
-def save(records: list[dict], affiliations_map: dict[str, list[str]], output_dir: Path) -> None:
+def save(records: list[dict], details_map: dict[str, dict], output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    papers = [structure(r, affiliations_map) for r in records]
+    papers = [structure(r, details_map) for r in records]
     json_path = output_dir / "papers.json"
     json_path.write_text(json.dumps(papers, indent=2, ensure_ascii=False))
     log.info(f"JSON → {json_path}")
@@ -341,22 +359,22 @@ def main() -> None:
     args = parser.parse_args()
 
     fetch_affs = not args.no_affiliations
+    records: list[dict] = []
+    details_map: dict[str, dict] = {}
 
     if args.browser:
-        records, affiliations_map = scrape_browser(delay=args.delay, fetch_affs=fetch_affs)
+        records, details_map = scrape_browser(delay=args.delay, fetch_affs=fetch_affs)
     else:
         session = requests.Session()
         session.headers.update(BASE_HEADERS)
         if args.cookie:
             session.headers["Cookie"] = args.cookie
         records = scrape_api(session, delay=args.delay)
-        affiliations_map = (
-            fetch_affiliations_api(records, session, workers=args.workers)
-            if fetch_affs else {}
-        )
+        if fetch_affs:
+            details_map = fetch_details_api(records, session, workers=args.workers)
 
     if records:
-        save(records, affiliations_map, args.output)
+        save(records, details_map, args.output)
 
 
 if __name__ == "__main__":

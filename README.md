@@ -4,6 +4,52 @@ Fetches metadata for all 4,589 papers in the
 [ICASSP 2026 proceedings](https://ieeexplore.ieee.org/xpl/conhome/11460365/proceeding)
 on IEEE Xplore.
 
+## How to Use
+
+### Step 1 - scrape all papers
+
+```bash
+docker build -t icassp-scraper .
+docker run --rm -v "$(pwd)/output:/app/output" icassp-scraper
+```
+
+Output is written to `output/papers.json` (full metadata) and `output/papers.csv`
+(title, abstract, url only).
+
+If you get HTTP 403, copy your browser session cookie and pass it:
+
+1. Open the proceedings page in Chrome.
+2. Open DevTools → Network → filter by `rest/search`.
+3. Click "Load More" → select the request → copy the full `Cookie:` header value.
+4. Run:
+
+```bash
+docker run --rm -v "$(pwd)/output:/app/output" icassp-scraper \
+  --cookie "JSESSIONID=abc123; TS01...=..."
+```
+
+### Step 2 - score relevance (optional)
+
+Get an API key at [console.anthropic.com](https://console.anthropic.com) → API Keys → Create Key.
+
+Edit `PROMPT_FOR_RELEVANCE.txt` to describe who you are and what papers you care about.
+
+Run:
+
+```bash
+docker run --rm \
+  -v "$(pwd)/output:/app/output" \
+  -v "$(pwd)/PROMPT_FOR_RELEVANCE.txt:/app/PROMPT_FOR_RELEVANCE.txt:ro" \
+  -e ANTHROPIC_API_KEY=sk-... \
+  --entrypoint python icassp-scraper \
+  estimate_relevance.py
+```
+
+Reads `output/papers.json` and produces `output/papers_with_relevance.json` and
+`output/papers_with_relevance.csv`, each with a new `relevance` field (0–100).
+Interrupted runs resume automatically.
+
+
 ## How it works
 
 The proceedings page is a JavaScript SPA. When you click "Load More", no new
@@ -21,7 +67,7 @@ other scrapers confirms the following:
 
 | Claim | Status |
 |-------|--------|
-| Base endpoint `ieeexplore.ieee.org/rest/search` | ✅ Confirmed |
+| Base endpoint `ieeexplore.ieee.org/rest/search` | ✅ Confirmed — **POST with JSON body** (GET returns 405) |
 | `rowsPerPage` parameter (max 100) | ✅ Confirmed |
 | Response field `records` (array) | ✅ Confirmed |
 | Response field `totalRecords` | ✅ Confirmed |
@@ -32,9 +78,9 @@ other scrapers confirms the following:
 | `authors[].preferredName` | ✅ Confirmed |
 | `authors[].affiliation` | ✅ Confirmed |
 | Document endpoint `/rest/document/{id}/` | ✅ Confirmed |
-| `publication-number` query param for proceedings | ⚠️ Plausible — confirmed for journals as `punumber`, not directly verified for the conference proceedings format |
-| `pageNumber` param | ⚠️ Plausible — alternative endpoints use `startRecord`; not directly confirmed for this endpoint |
-| `newsearch=true` param | ⚠️ Unverified — appears in the URL but its necessity is unknown |
+| `newsearch=true` parameter | ✅ Confirmed — appears in live IEEE Xplore URLs and search results |
+| `pageNumber` parameter | ✅ Confirmed — used in live IEEE Xplore URLs and independently in [1PageConference](https://github.com/ResearchGear/1PageConference/blob/master/ieee.py) |
+| `punumber` body field for `/rest/search` | ✅ Confirmed — `publication-number` in the POST body was silently ignored (returned all 7M IEEE papers); switching to `punumber` correctly filters to the conference |
 
 ### Abstract truncation
 
@@ -51,8 +97,8 @@ The scraper runs in two sequential phases:
 
 | Phase | Requests | What it fetches |
 |-------|----------|-----------------|
-| Search | 46 calls (100 papers/page) | title, abstract, authors, DOI, article number |
-| Affiliation enrichment | ~4,589 calls (1 per paper) | per-author institution strings |
+| Search | 46 calls (100 papers/page) | title, truncated abstract, authors, DOI, article number |
+| Detail enrichment | ~4,589 calls (1 per paper) | full abstract, per-author institution strings |
 
 Affiliations are absent from the search results and require a separate
 `GET /rest/document/{articleNumber}/` call per paper. Skip this phase with
@@ -66,6 +112,7 @@ Affiliations are absent from the search results and require a separate
 [
   {
     "title": "...",
+    "venue": "ICASSP 2026 - 2026 IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP)",
     "abstract": "...",
     "authors": [
       {"name": "Alice Smith", "affiliation": "MIT, Cambridge, MA, USA"},
@@ -77,130 +124,44 @@ Affiliations are absent from the search results and require a separate
 ]
 ```
 
-## Two modes
+`output/papers.csv` — a CSV file with three columns: `title`, `abstract`, `url`.
 
-Both modes call the same internal endpoint. The difference is **who makes the
-HTTP request**:
-
-### Mode 1 — REST API (faster, ~1–10 min)
-
-Python's `requests` library calls the endpoint directly. Works from most
-personal or university networks. May return 403 from cloud/data-centre IPs
-because IEEE Xplore blocks them by IP reputation.
-
-```bash
-python scraper.py
-```
-
-If you get HTTP 403, copy your browser session cookie and pass it:
-
-1. Open the proceedings page in Chrome.
-2. Open DevTools → Network → filter by `rest/search`.
-3. Click "Load More" → select the request → copy the full `Cookie:` header value.
-4. Run:
-
-```bash
-python scraper.py --cookie "JSESSIONID=abc123; TS01...=..."
-```
-
-### Mode 2 — Browser / Playwright (~10–30 min)
-
-Loads the proceedings page once in headless Chromium to establish a real
-browser session (cookies, TLS fingerprint), then calls `fetch()` from inside
-the browser's JavaScript context for every request. Because the fetch runs
-inside the browser, IEEE Xplore sees it as a same-origin first-party request.
-
-Requires installing Playwright and Chromium (~300 MB):
-
-```bash
-pip install playwright
-playwright install chromium
-python scraper.py --browser
-```
-
-## Installation
-
-```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt          # runtime deps only
-pip install -r requirements-dev.txt      # adds ruff + mypy for development
-```
-
-## Lint and type-check
-
-```bash
-ruff check scraper.py
-python -m mypy scraper.py --ignore-missing-imports
-```
-
-## Docker
-
-The Dockerfile has three targets:
-
-| Target | Size | Use |
-|--------|------|-----|
-| `lint` | ~200 MB | Runs ruff + mypy; fails the build if checks don't pass |
-| `api` | ~200 MB | REST API mode; runs as non-root user |
-| `browser` | ~800 MB | Browser mode; includes Chromium |
-
-```bash
-# REST API mode
-docker build --target api -t icassp-scraper:api .
-docker run --rm -v "$(pwd)/output:/app/output" icassp-scraper:api
-docker run --rm -v "$(pwd)/output:/app/output" icassp-scraper:api \
-  --cookie "JSESSIONID=abc123; ..."
-
-# Browser mode
-docker build --target browser -t icassp-scraper:browser .
-docker run --rm -v "$(pwd)/output:/app/output" icassp-scraper:browser
-```
-
-## Google Cloud Run
-
-`cloudbuild.yaml` builds, deploys, and runs the scraper as a Cloud Run Job.
-Output is written directly to a GCS bucket mounted at `/app/output`.
-
-**One-time setup:**
-```bash
-gcloud artifacts repositories create icassp \
-  --repository-format=docker --location=us-central1
-gcloud storage buckets create gs://MY_BUCKET --location=us-central1
-```
-
-**Submit a build:**
-```bash
-gcloud builds submit --config cloudbuild.yaml \
-  --substitutions _GCS_BUCKET=MY_BUCKET
-```
-
-Cloud Build steps (in order): lint → typecheck → docker build (`browser`
-target) → push to Artifact Registry → deploy Cloud Run Job → execute and wait.
-`papers.json` appears in `gs://MY_BUCKET/` when the job completes.
-
-> **Note:** Cloud Run runs on GCP infrastructure. IEEE Xplore may block GCP
-> IPs even in browser mode since the requests still originate from a
-> data-centre IP range. If the job returns 0 results, run the scraper locally
-> instead and upload the output to GCS manually.
-
-Available `--substitutions`:
-
-| Key | Default | Description |
-|-----|---------|-------------|
-| `_REGION` | `us-central1` | GCP region |
-| `_AR_REPO` | `icassp` | Artifact Registry repository name |
-| `_JOB_NAME` | `icassp-scraper` | Cloud Run Job name |
-| `_GCS_BUCKET` | *(required)* | GCS bucket for `papers.json` |
 
 ## All options
 
+**scraper.py**
+
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--browser` | off | Use Playwright/Chromium instead of the REST API |
-| `--cookie STRING` | — | Full `Cookie:` header value (REST API mode only) |
+| `--cookie STRING` | — | Full `Cookie:` header value from browser DevTools |
 | `--delay SECONDS` | 1.5 | Pause between requests |
-| `--workers N` | 8 | Concurrent workers for affiliation fetching (REST mode only) |
-| `--no-affiliations` | off | Skip affiliation fetching; `affiliation` fields will be empty strings |
-| `--output DIR` | `./output` | Directory for `papers.json` |
+| `--workers N` | 8 | Concurrent workers for detail fetching |
+| `--no-details`, `--no-affiliations` | off | Skip detail fetching; affiliations will be empty and abstracts may be truncated |
+| `--limit N` | — | Fetch only the first N papers (useful for testing; disables checkpointing) |
+| `--output DIR` | `./output` | Directory for `papers.json` and `papers.csv` |
+
+**estimate_relevance.py**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--input PATH` | `output/papers.json` | Input file |
+| `--output DIR` | same dir as input | Output directory |
+| `--model ID` | `claude-haiku-4-5` | Claude model to use |
+| `--no-batch` | off | Use real-time concurrent calls instead of the Batches API |
+| `--workers N` | `8` | Concurrent workers (only with `--no-batch`) |
+| `--limit N` | — | Score only the first N papers (use with `--no-batch` for testing) |
+
+
+## Checkpoint / resume
+
+A checkpoint is saved to `<output>/checkpoint.json` after the search phase
+and every 200 papers during detail fetching. If the run is interrupted for
+any reason, re-run the same command with the same `--output` directory and
+it will pick up where it left off. The checkpoint is deleted automatically
+on successful completion.
+
+Checkpointing is disabled when `--limit` is used.
+
 
 ## Caveats
 

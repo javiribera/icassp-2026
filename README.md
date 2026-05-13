@@ -2,7 +2,8 @@
 
 Fetches metadata for all 4,589 papers in the
 [ICASSP 2026 proceedings](https://ieeexplore.ieee.org/xpl/conhome/11460365/proceeding)
-on IEEE Xplore.
+on IEEE Xplore, then scores the relevance of every paper from 0 to 100 using a
+custom prompt that describes your research interests.
 
 ## How to Use
 

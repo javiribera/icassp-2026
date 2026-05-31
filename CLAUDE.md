@@ -4,9 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository Overview
 
-Scrapes paper metadata from the ICASSP 2026 proceedings on IEEE Xplore
-(`https://ieeexplore.ieee.org/xpl/conhome/11460365/proceeding`, 4 589 papers)
-and writes results to `output/papers.json`.
+Two scripts:
+- `scraper.py` — scrapes paper metadata from academic conference proceedings; both IEEE Xplore
+  (icassp) and CVF Open Access (cvpr, iccv, wacv) are supported via `--conference` + `--year`.
+  Writes `output/papers.json` and `output/papers.csv`.
+- `estimate_relevance.py` — scores each paper 0–100 for relevance using the Anthropic API;
+  reads `PROMPT_FOR_RELEVANCE.txt` (user-supplied). Writes `papers_with_relevance.json/.csv`.
 
 ## Commands
 
@@ -16,57 +19,74 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt      # includes ruff + mypy
 
 # Lint and type-check (must pass before committing)
-ruff check scraper.py
-python -m mypy scraper.py --ignore-missing-imports
+ruff check scraper.py estimate_relevance.py
+python -m mypy scraper.py estimate_relevance.py --ignore-missing-imports
 
-# Run (~20–30 min)
-python scraper.py
-python scraper.py --cookie "JSESSIONID=..."   # if 403, pass browser cookie
-python scraper.py --delay 2.0 --output data/
-python scraper.py --limit 20                  # first 20 papers only (testing)
+# Scrape CVF (static HTML, no auth)
+python scraper.py --conference cvpr  --year 2024
+python scraper.py --conference cvpr  --year 2024 --limit 20   # smoke-test
 
-# Resume an interrupted run (checkpoint auto-saved to output/checkpoint.json)
-python scraper.py            # just re-run with same --output
+# Scrape IEEE (JSON REST API; use --cookie if 403)
+python scraper.py --conference icassp --year 2026
+python scraper.py --conference icassp --year 2026 --cookie "JSESSIONID=..."
 
-# Docker — scrape papers
-docker build -t icassp-scraper .
-docker run --rm -v "$(pwd)/output:/app/output" icassp-scraper
+# Resume an interrupted run
+python scraper.py --conference cvpr --year 2024   # same command, same --output
 
-# Docker — score relevance (requires ANTHROPIC_API_KEY)
-docker run --rm \
-  -v "$(pwd)/output:/app/output" \
-  -v "$(pwd)/PROMPT_FOR_RELEVANCE.txt:/app/PROMPT_FOR_RELEVANCE.txt:ro" \
-  -e ANTHROPIC_API_KEY=sk-... \
-  --entrypoint python icassp-scraper \
-  estimate_relevance.py
+# Score relevance (requires ANTHROPIC_API_KEY and PROMPT_FOR_RELEVANCE.txt)
+python estimate_relevance.py
+python estimate_relevance.py --no-batch --limit 5   # test with 5 papers
+
+# Docker
+docker build -t conf-scraper .
+docker run --rm -v "$(pwd)/output:/app/output" conf-scraper \
+  --conference cvpr --year 2024
 ```
 
 ## Architecture
 
-`scraper.py` calls `https://ieeexplore.ieee.org/rest/search` — the internal
-XHR endpoint used by the IEEE Xplore SPA. It reads `totalRecords` from the
-first response, computes page count using `ROWS_PER_PAGE = 100`, then
-paginates with a configurable delay.
+### scraper.py
 
-Produces `output/papers.json` via `structure()` + `save()`.
-`structure()` converts a raw API record into
-`{title, abstract, authors: [{name, affiliation}], doi, url}`.
+Two backends behind shared scaffolding (checkpoint/resume, `enrich_details`, `save`):
 
-**Detail enrichment**: `/rest/search` returns truncated abstracts and no author affiliations.
-After the search scrape, the script fetches `/rest/document/{articleNumber}/`
-for every paper to get the full abstract and per-author affiliation strings.
-`fetch_details_api()` uses `ThreadPoolExecutor` with `--workers` (default 8);
-retries on 429/503 with exponential backoff.
-Skip with `--no-details` (alias: `--no-affiliations`).
+**CVF backend** (`cvpr`, `iccv`, `wacv`):
+- `cvf_list()` — GET `openaccess.thecvf.com/{CONF}{year}?day=all`; parse `dt.ptitle > a`.
+  Fallback: discover `?day=...` links from root page.
+- `cvf_fetch_one()` — GET per-paper page; parse `#papertitle`, `#authors`, `#abstract`, PDF link.
 
-**Checkpoint/resume**: `save_checkpoint()` / `load_checkpoint()` write `<output>/checkpoint.json` after the search phase and every `CHECKPOINT_INTERVAL=200` detail completions. On re-run, completed details are skipped. Checkpoint is deleted on success. Disabled when `--limit` is used.
+**IEEE backend** (`icassp`):
+- `ieee_list()` — POST `/rest/search` pagination; maps records to unified paper dicts.
+- `ieee_fetch_one()` — GET `/rest/document/{articleNumber}/`; updates abstract + affiliations.
+
+**Shared driver**:
+- `enrich_details()` — `ThreadPoolExecutor` over backend's `fetch_one(session, paper)`;
+  checkpoints every `CHECKPOINT_INTERVAL=200`.
+- `save(papers, output_dir)` — strips `_`-prefixed internal fields; writes `papers.json` +
+  `papers.csv` (columns: `title, abstract, url`).
+- `save_checkpoint`/`load_checkpoint` — `{"papers":[...], "done":[ids]}`.
+
+**Unified paper dict** (written to papers.json):
+```
+title, venue, year, abstract, authors:[{name, affiliation}], doi, url, pdf_url
+```
+`affiliation` is always `""` for CVF. `doi`/`pdf_url` differ by backend.
+
+### estimate_relevance.py
+
+- **Batches API (default)**: submits all unscored papers in one batch; polls until complete;
+  stores `batch_id` in checkpoint for resume if interrupted mid-poll.
+- **`--no-batch`**: `ThreadPoolExecutor` over `client.messages.create()`; checkpoint every 200.
+- Prompt: loads `PROMPT_FOR_RELEVANCE.txt` + paper `title`/`abstract`; asks for 0–100 integer.
+- Resume key: paper `title` (unique within a run).
 
 ## Key Details
 
-- `--cookie` accepts the full `Cookie:` header string copied from browser DevTools.
-- `--limit N` truncates to the first N papers after the search phase; disables checkpointing. Use for smoke-testing.
-- `output/` is git-ignored; the Docker image mounts it as a volume.
-- Playwright is required only for `schedule.py` (not in `requirements.txt`); install it separately.
+- `--conference` and `--year` are both required for `scraper.py`.
+- `--cookie` applies to IEEE only; ignored for CVF.
+- CVPR2026 returns 403 until papers are published (~June 2026). Test with `--year 2024`.
+- `--limit N` truncates and disables checkpointing (for smoke-testing).
+- `output/` is git-ignored; Docker mounts it as a volume.
+- `--ignore-missing-imports` in mypy covers `bs4` and `anthropic` missing stubs.
 
 ## Git Workflow
 

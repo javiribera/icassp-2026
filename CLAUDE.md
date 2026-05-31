@@ -78,6 +78,8 @@ title, venue, year, abstract, authors:[{name, affiliation}], doi, url, pdf_url
 - **`--no-batch`**: `ThreadPoolExecutor` over `client.messages.create()`; checkpoint every 200.
 - Prompt: loads `PROMPT_FOR_RELEVANCE.txt` + paper `title`/`abstract`; asks for 0–100 integer.
 - Resume key: paper `title` (unique within a run).
+- `UsageSummary` accumulates token counts and logs a token/cost summary on exit (in a `finally`,
+  so it prints even on crash). Batch-mode cost applies the Batches API 50% discount.
 
 ## Key Details
 

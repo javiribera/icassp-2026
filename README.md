@@ -1,48 +1,51 @@
-# ICASSP 2026 Proceedings Scraper
+# ICASSP / CVPR / ICCV / WACV Proceedings Scraper
 
-Fetches metadata for all 4,589 papers in the
-[ICASSP 2026 proceedings](https://ieeexplore.ieee.org/xpl/conhome/11460365/proceeding)
-on IEEE Xplore, then scores the relevance of every paper from 0 to 100 using a
-custom prompt that describes your research interests.
+Scrapes paper metadata from academic conference proceedings, then scores the
+relevance of every paper from 0 to 100 using a custom prompt that describes
+your research interests.
+
+**Supported conferences**
+
+| Conference | Source | Notes |
+|------------|--------|-------|
+| `icassp` | IEEE Xplore internal REST API | Requires `--year 2026` (or add more years to `IEEE_PUBNUMS`) |
+| `cvpr`, `iccv`, `wacv` | [openaccess.thecvf.com](https://openaccess.thecvf.com) static HTML | Any past year; CVPR2026 available ~Jun 2026 |
 
 ## How to Use
 
-### Step 1 - scrape all papers
+### Step 1 — scrape papers
 
 ```bash
-docker build -t icassp-scraper .
-docker run --rm -v "$(pwd)/output:/app/output" icassp-scraper
+# CVPR 2024 (CVF source)
+docker build -t conf-scraper .
+docker run --rm -v "$(pwd)/output:/app/output" conf-scraper \
+  --conference cvpr --year 2024
+
+# ICASSP 2026 (IEEE Xplore source)
+docker run --rm -v "$(pwd)/output:/app/output" conf-scraper \
+  --conference icassp --year 2026
+
+# If ICASSP returns HTTP 403, pass a browser session cookie:
+docker run --rm -v "$(pwd)/output:/app/output" conf-scraper \
+  --conference icassp --year 2026 \
+  --cookie "JSESSIONID=abc123; TS01...=..."
 ```
 
 Output is written to `output/papers.json` (full metadata) and `output/papers.csv`
 (title, abstract, url only).
 
-If you get HTTP 403, copy your browser session cookie and pass it:
-
-1. Open the proceedings page in Chrome.
-2. Open DevTools → Network → filter by `rest/search`.
-3. Click "Load More" → select the request → copy the full `Cookie:` header value.
-4. Run:
-
-```bash
-docker run --rm -v "$(pwd)/output:/app/output" icassp-scraper \
-  --cookie "JSESSIONID=abc123; TS01...=..."
-```
-
-### Step 2 - score relevance (optional)
+### Step 2 — score relevance (optional)
 
 Get an API key at [console.anthropic.com](https://console.anthropic.com) → API Keys → Create Key.
 
 Edit `PROMPT_FOR_RELEVANCE.txt` to describe who you are and what papers you care about.
-
-Run:
 
 ```bash
 docker run --rm \
   -v "$(pwd)/output:/app/output" \
   -v "$(pwd)/PROMPT_FOR_RELEVANCE.txt:/app/PROMPT_FOR_RELEVANCE.txt:ro" \
   -e ANTHROPIC_API_KEY=sk-... \
-  --entrypoint python icassp-scraper \
+  --entrypoint python conf-scraper \
   estimate_relevance.py
 ```
 
@@ -51,61 +54,7 @@ Reads `output/papers.json` and produces `output/papers_with_relevance.json` and
 Interrupted runs resume automatically.
 
 
-## How it works
-
-The proceedings page is a JavaScript SPA. When you click "Load More", no new
-HTML page loads — the button fires a `fetch()` call to the server's internal
-REST endpoint and appends the JSON results to the DOM. The scraper calls that
-same endpoint directly in a loop, bypassing the button entirely.
-
-### What has been verified
-
-The internal IEEE Xplore REST API is undocumented but has been independently
-observed and used by multiple public projects. Cross-referencing
-[ieee_journal_downloader](https://github.com/FongYoong/ieee_journal_downloader),
-[RSSHub discussions](https://github.com/DIYgod/RSSHub/discussions/8571), and
-other scrapers confirms the following:
-
-| Claim | Status |
-|-------|--------|
-| Base endpoint `ieeexplore.ieee.org/rest/search` | ✅ Confirmed — **POST with JSON body** (GET returns 405) |
-| `rowsPerPage` parameter (max 100) | ✅ Confirmed |
-| Response field `records` (array) | ✅ Confirmed |
-| Response field `totalRecords` | ✅ Confirmed |
-| Response field `articleTitle` | ✅ Confirmed |
-| Response field `articleNumber` | ✅ Confirmed |
-| Response field `doi` | ✅ Confirmed |
-| Response field `abstract` | ✅ Confirmed — **but truncated** (see below) |
-| `authors[].preferredName` | ✅ Confirmed |
-| `authors[].affiliation` | ✅ Confirmed |
-| Document endpoint `/rest/document/{id}/` | ✅ Confirmed |
-| `newsearch=true` parameter | ✅ Confirmed — appears in live IEEE Xplore URLs and search results |
-| `pageNumber` parameter | ✅ Confirmed — used in live IEEE Xplore URLs and independently in [1PageConference](https://github.com/ResearchGear/1PageConference/blob/master/ieee.py) |
-| `punumber` body field for `/rest/search` | ✅ Confirmed — `publication-number` in the POST body was silently ignored (returned all 7M IEEE papers); switching to `punumber` correctly filters to the conference |
-
-### Abstract truncation
-
-Abstracts returned by the `/rest/search` endpoint are **truncated**
-(confirmed by [RSSHub discussion #8571](https://github.com/DIYgod/RSSHub/discussions/8571)).
-The full abstract is only available from the per-paper document endpoint
-(`/rest/document/{articleNumber}/`). The scraper automatically fetches the
-full abstract during the affiliation enrichment phase. Pass `--no-affiliations`
-only if truncated abstracts are acceptable.
-
-## Scraping phases
-
-The scraper runs in two sequential phases:
-
-| Phase | Requests | What it fetches |
-|-------|----------|-----------------|
-| Search | 46 calls (100 papers/page) | title, truncated abstract, authors, DOI, article number |
-| Detail enrichment | ~4,589 calls (1 per paper) | full abstract, per-author institution strings |
-
-Affiliations are absent from the search results and require a separate
-`GET /rest/document/{articleNumber}/` call per paper. Skip this phase with
-`--no-affiliations`.
-
-## Output
+## Output schema
 
 `output/papers.json` — a JSON array, one object per paper:
 
@@ -113,19 +62,61 @@ Affiliations are absent from the search results and require a separate
 [
   {
     "title": "...",
-    "venue": "ICASSP 2026 - 2026 IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP)",
+    "venue": "CVPR 2024",
+    "year": 2024,
     "abstract": "...",
     "authors": [
       {"name": "Alice Smith", "affiliation": "MIT, Cambridge, MA, USA"},
-      {"name": "Bob Jones",   "affiliation": "Stanford University, CA, USA"}
+      {"name": "Bob Jones",   "affiliation": ""}
     ],
-    "doi": "10.1109/ICASSP...",
-    "url": "https://ieeexplore.ieee.org/document/..."
+    "doi": "10.1109/...",
+    "url": "https://openaccess.thecvf.com/content/CVPR2024/html/...",
+    "pdf_url": "https://openaccess.thecvf.com/content/CVPR2024/papers/..."
   }
 ]
 ```
 
-`output/papers.csv` — a CSV file with three columns: `title`, `abstract`, `url`.
+Field notes:
+- `year` — integer from `--year`
+- `affiliation` — populated for IEEE; always `""` for CVF (site lists names only)
+- `doi` — populated for IEEE; `""` for CVF
+- `pdf_url` — populated for CVF; `""` for IEEE
+
+`output/papers.csv` — columns: `title`, `abstract`, `url`
+
+
+## How it works
+
+### CVF backend (cvpr / iccv / wacv)
+
+The CVF Open Access site is static HTML. The scraper:
+1. **Listing phase:** fetches `https://openaccess.thecvf.com/{CONF}{year}?day=all` and
+   parses `<dt class="ptitle"><a href="...">Title</a></dt>` entries. Falls back to
+   per-day pages if `?day=all` returns nothing.
+2. **Detail phase:** fetches each per-paper page to get the full abstract, author list
+   (`<div id="abstract">`, `<div id="authors">`), and PDF URL.
+
+No authentication required. CVPR2026 will return nothing until papers are published
+(~June 2026); test with `--conference cvpr --year 2024`.
+
+### IEEE backend (icassp)
+
+Calls the internal XHR endpoint used by the IEEE Xplore SPA
+(`POST /rest/search` + `GET /rest/document/{articleNumber}/`).
+If the endpoint returns 403, pass `--cookie` with a session cookie from DevTools.
+
+See [README — abstract truncation note](https://github.com/DIYgod/RSSHub/discussions/8571):
+the `/rest/search` response truncates abstracts; the detail phase fetches full text.
+
+
+## Scraping phases
+
+| Phase | What it fetches |
+|-------|-----------------|
+| Listing | title, venue, year, URL (and PDF URL for CVF) |
+| Detail enrichment | full abstract, authors, affiliations (IEEE), PDF URL (CVF) |
+
+Skip detail enrichment with `--no-details` (faster; abstracts/affiliations may be empty).
 
 
 ## All options
@@ -134,12 +125,14 @@ Affiliations are absent from the search results and require a separate
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--cookie STRING` | — | Full `Cookie:` header value from browser DevTools |
+| `--conference CONF` | *(required)* | `icassp` \| `cvpr` \| `iccv` \| `wacv` |
+| `--year YEAR` | *(required)* | Conference year (e.g. 2026) |
+| `--cookie STRING` | — | Full `Cookie:` header value from browser DevTools (IEEE only) |
 | `--delay SECONDS` | 1.5 | Pause between requests |
 | `--workers N` | 8 | Concurrent workers for detail fetching |
-| `--no-details`, `--no-affiliations` | off | Skip detail fetching; affiliations will be empty and abstracts may be truncated |
-| `--limit N` | — | Fetch only the first N papers (useful for testing; disables checkpointing) |
-| `--output DIR` | `./output` | Directory for `papers.json` and `papers.csv` |
+| `--no-details`, `--no-affiliations` | off | Skip detail phase |
+| `--limit N` | — | Fetch only the first N papers (for testing; disables checkpointing) |
+| `--output DIR` | `./output` | Output directory |
 
 **estimate_relevance.py**
 
@@ -155,19 +148,20 @@ Affiliations are absent from the search results and require a separate
 
 ## Checkpoint / resume
 
-A checkpoint is saved to `<output>/checkpoint.json` after the search phase
-and every 200 papers during detail fetching. If the run is interrupted for
-any reason, re-run the same command with the same `--output` directory and
-it will pick up where it left off. The checkpoint is deleted automatically
-on successful completion.
+A checkpoint is saved to `<output>/checkpoint.json` after the listing phase and
+every 200 detail fetches. If interrupted, re-run with the same `--output` directory
+to resume. Deleted automatically on successful completion.
 
 Checkpointing is disabled when `--limit` is used.
+
+`estimate_relevance.py` saves a separate `<output>/relevance_checkpoint.json`
+(or the batch ID, when using the Batches API). Resume works the same way.
 
 
 ## Caveats
 
-- The internal IEEE Xplore API is undocumented and may change without notice.
-  If the scraper returns 0 results, inspect XHR traffic in DevTools to find
-  the updated endpoint or parameters.
+- The IEEE Xplore internal API is undocumented and may change without notice.
+  If it returns 0 results, inspect XHR traffic in DevTools to find updated parameters.
 - Respect IEEE Xplore's [Terms of Use](https://ieeexplore.ieee.org/Xplorehelp/overview-of-ieee-xplore/terms-of-use).
   The default 1.5 s delay keeps request rates polite.
+- CVF abstracts and authors are only available on individual paper pages (phase 2).

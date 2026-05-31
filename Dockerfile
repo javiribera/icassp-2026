@@ -9,4 +9,4 @@ RUN mkdir -p /app/output
 
 VOLUME ["/app/output"]
 ENTRYPOINT ["python", "scraper.py"]
-CMD ["--output", "/app/output"]
+CMD ["--conference", "cvpr", "--year", "2026", "--output", "/app/output"]

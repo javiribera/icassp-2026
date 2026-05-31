@@ -102,10 +102,14 @@ def build_prompt(user_prompt: str, paper: dict) -> str:
     )
 
 
-def parse_score(text: str) -> int:
+def parse_score(text: str, label: str = "") -> int:
     m = re.search(r"\b(\d{1,3})\b", text)
     if m:
         return max(0, min(100, int(m.group(1))))
+    log.warning(
+        f"No integer in model response{f' for {label!r}' if label else ''}; "
+        f"defaulting to 0. Got: {text!r}"
+    )
     return 0
 
 
@@ -170,7 +174,7 @@ def score_batch(
                     "custom_id": str(i),
                     "params": {
                         "model": model,
-                        "max_tokens": 10,
+                        "max_tokens": 16,
                         "messages": [
                             {
                                 "role": "user",
@@ -203,7 +207,7 @@ def score_batch(
         title = to_score_titles[idx] if idx < len(to_score_titles) else ""
         if result.result.type == "succeeded":
             text = result.result.message.content[0].text  # type: ignore[union-attr]
-            scored[title] = parse_score(text)
+            scored[title] = parse_score(text, label=title)
         else:
             log.warning(
                 f"Batch result for paper {idx} ({result.result.type}); defaulting to 0."
@@ -245,7 +249,7 @@ def score_realtime(
                 messages=[{"role": "user", "content": prompt}],
             )
             text = resp.content[0].text  # type: ignore[union-attr]
-            return title, parse_score(text)
+            return title, parse_score(text, label=title)
         except Exception as e:
             log.warning(f"Error scoring '{title}': {e}")
             return title, 0

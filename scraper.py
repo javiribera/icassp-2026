@@ -185,7 +185,10 @@ def enrich_details(
     completed = 0
 
     def _task(paper: dict) -> str:
-        fetch_one(session, paper)
+        try:
+            fetch_one(session, paper)
+        except Exception as exc:
+            log.warning(f"Unexpected error fetching details for '{paper['_id']}': {exc}")
         time.sleep(delay)
         return paper["_id"]
 

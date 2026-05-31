@@ -59,9 +59,10 @@ class UsageSummary:
         self.output_tokens += output_tokens
 
     def report(self, model: str, batch: bool = False) -> None:
-        if not self.input_tokens and not self.output_tokens:
-            return
         total = self.input_tokens + self.output_tokens
+        if total == 0:
+            log.info("Tokens used: unavailable (SDK did not report per-result usage for this batch)")
+            return
         log.info(
             f"Tokens used: {self.input_tokens:,} input + {self.output_tokens:,} output"
             f" = {total:,} total"
@@ -256,7 +257,9 @@ def score_batch(
         title = to_score_titles[idx] if idx < len(to_score_titles) else ""
         if result.result.type == "succeeded":
             msg = result.result.message  # type: ignore[union-attr]
-            usage.add(msg.usage.input_tokens, msg.usage.output_tokens)
+            u = getattr(msg, "usage", None)
+            if u is not None:
+                usage.add(u.input_tokens, u.output_tokens)
             scored[title] = parse_score(msg.content[0].text, label=title)  # type: ignore[union-attr]
         else:
             log.warning(

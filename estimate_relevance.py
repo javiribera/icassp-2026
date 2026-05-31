@@ -57,7 +57,7 @@ class UsageSummary:
         self.input_tokens += input_tokens
         self.output_tokens += output_tokens
 
-    def report(self, model: str) -> None:
+    def report(self, model: str, batch: bool = False) -> None:
         if not self.input_tokens and not self.output_tokens:
             return
         total = self.input_tokens + self.output_tokens
@@ -69,10 +69,15 @@ class UsageSummary:
             (v for k, v in MODEL_PRICING.items() if model.startswith(k)), None
         )
         if pricing:
+            in_rate, out_rate = pricing
+            if batch:
+                # Anthropic Batches API is billed at 50% of standard token rates.
+                in_rate, out_rate = in_rate * 0.5, out_rate * 0.5
             cost = (
-                self.input_tokens * pricing[0] + self.output_tokens * pricing[1]
+                self.input_tokens * in_rate + self.output_tokens * out_rate
             ) / 1_000_000
-            log.info(f"Estimated cost: ${cost:.4f} ({model})")
+            suffix = f"{model}, Batches API −50%" if batch else model
+            log.info(f"Estimated cost: ${cost:.4f} ({suffix})")
         else:
             log.info(f"Cost estimate unavailable for model {model!r} (not in pricing table)")
 
@@ -433,7 +438,7 @@ def main() -> None:
 
         log.info(f"Done. {len(papers)} papers scored.")
     finally:
-        usage.report(args.model)
+        usage.report(args.model, batch=not args.no_batch)
 
 
 if __name__ == "__main__":

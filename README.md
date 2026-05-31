@@ -53,6 +53,9 @@ Reads `output/papers.json` and produces `output/papers_with_relevance.json` and
 `output/papers_with_relevance.csv`, each with a new `relevance` field (0–100).
 Interrupted runs resume automatically.
 
+On exit (whether it finishes or crashes), the script logs the total tokens used and an
+estimated cost. In the default batch mode the estimate reflects the Batches API's 50% discount.
+
 
 ## Output schema
 

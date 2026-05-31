@@ -36,8 +36,45 @@ CHECKPOINT_INTERVAL = 200
 PROMPT_FILE = "PROMPT_FOR_RELEVANCE.txt"
 POLL_INTERVAL = 60  # seconds between batch status polls
 
+# (model-id-prefix, (input $/1M tokens, output $/1M tokens))
+MODEL_PRICING: dict[str, tuple[float, float]] = {
+    "claude-haiku-4-5": (1.00, 5.00),
+    "claude-sonnet-4-6": (3.00, 15.00),
+    "claude-opus-4-6": (5.00, 25.00),
+    "claude-opus-4-7": (5.00, 25.00),
+}
+
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
+
+
+class UsageSummary:
+    def __init__(self) -> None:
+        self.input_tokens = 0
+        self.output_tokens = 0
+
+    def add(self, input_tokens: int, output_tokens: int) -> None:
+        self.input_tokens += input_tokens
+        self.output_tokens += output_tokens
+
+    def report(self, model: str) -> None:
+        if not self.input_tokens and not self.output_tokens:
+            return
+        total = self.input_tokens + self.output_tokens
+        log.info(
+            f"Tokens used: {self.input_tokens:,} input + {self.output_tokens:,} output"
+            f" = {total:,} total"
+        )
+        pricing = next(
+            (v for k, v in MODEL_PRICING.items() if model.startswith(k)), None
+        )
+        if pricing:
+            cost = (
+                self.input_tokens * pricing[0] + self.output_tokens * pricing[1]
+            ) / 1_000_000
+            log.info(f"Estimated cost: ${cost:.4f} ({model})")
+        else:
+            log.info(f"Cost estimate unavailable for model {model!r} (not in pricing table)")
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +191,7 @@ def score_batch(
     use_checkpoint: bool,
     cp_batch_id: str | None,
     cp_batch_titles: list[str],
+    usage: UsageSummary,
 ) -> dict[str, int]:
     to_score = [p for p in papers if p.get("title", "") not in scored]
     if not to_score:
@@ -206,8 +244,9 @@ def score_batch(
         idx = int(result.custom_id)
         title = to_score_titles[idx] if idx < len(to_score_titles) else ""
         if result.result.type == "succeeded":
-            text = result.result.message.content[0].text  # type: ignore[union-attr]
-            scored[title] = parse_score(text, label=title)
+            msg = result.result.message  # type: ignore[union-attr]
+            usage.add(msg.usage.input_tokens, msg.usage.output_tokens)
+            scored[title] = parse_score(msg.content[0].text, label=title)  # type: ignore[union-attr]
         else:
             log.warning(
                 f"Batch result for paper {idx} ({result.result.type}); defaulting to 0."
@@ -230,6 +269,7 @@ def score_realtime(
     workers: int,
     output_dir: Path,
     use_checkpoint: bool,
+    usage: UsageSummary,
 ) -> dict[str, int]:
     to_score = [p for p in papers if p.get("title", "") not in scored]
     if not to_score:
@@ -239,28 +279,29 @@ def score_realtime(
     log.info(f"Scoring {len(to_score)} papers with {workers} workers (real-time)...")
     completed = 0
 
-    def _task(paper: dict) -> tuple[str, int]:
+    def _task(paper: dict) -> tuple[str, int, int, int]:
         prompt = build_prompt(user_prompt, paper)
         title = paper.get("title", "")
         try:
             resp = client.messages.create(
                 model=model,
-                max_tokens=10,
+                max_tokens=16,
                 messages=[{"role": "user", "content": prompt}],
             )
             text = resp.content[0].text  # type: ignore[union-attr]
-            return title, parse_score(text, label=title)
+            return title, parse_score(text, label=title), resp.usage.input_tokens, resp.usage.output_tokens
         except Exception as e:
             log.warning(f"Error scoring '{title}': {e}")
-            return title, 0
+            return title, 0, 0, 0
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         futs = [pool.submit(_task, p) for p in to_score]
         for fut in tqdm(
             concurrent.futures.as_completed(futs), total=len(to_score), desc="Scoring"
         ):
-            title, score = fut.result()
+            title, score, inp, out = fut.result()
             scored[title] = score
+            usage.add(inp, out)
             completed += 1
             if use_checkpoint and completed % CHECKPOINT_INTERVAL == 0:
                 save_checkpoint(output_dir, scored)
@@ -349,45 +390,50 @@ def main() -> None:
         if scored:
             log.info(f"Resuming: {len(scored)} papers already scored.")
 
+    usage = UsageSummary()
     client = anthropic.Anthropic()
+    try:
+        if args.no_batch:
+            scored = score_realtime(
+                client,
+                papers,
+                scored,
+                user_prompt,
+                args.model,
+                workers=args.workers,
+                output_dir=output_dir,
+                use_checkpoint=use_checkpoint,
+                usage=usage,
+            )
+        else:
+            scored = score_batch(
+                client,
+                papers,
+                scored,
+                user_prompt,
+                args.model,
+                output_dir=output_dir,
+                use_checkpoint=use_checkpoint,
+                cp_batch_id=cp_batch_id,
+                cp_batch_titles=cp_batch_titles,
+                usage=usage,
+            )
 
-    if args.no_batch:
-        scored = score_realtime(
-            client,
-            papers,
-            scored,
-            user_prompt,
-            args.model,
-            workers=args.workers,
-            output_dir=output_dir,
-            use_checkpoint=use_checkpoint,
-        )
-    else:
-        scored = score_batch(
-            client,
-            papers,
-            scored,
-            user_prompt,
-            args.model,
-            output_dir=output_dir,
-            use_checkpoint=use_checkpoint,
-            cp_batch_id=cp_batch_id,
-            cp_batch_titles=cp_batch_titles,
-        )
+        for paper in papers:
+            title = paper.get("title", "")
+            paper["relevance"] = scored.get(title, 0)
 
-    for paper in papers:
-        title = paper.get("title", "")
-        paper["relevance"] = scored.get(title, 0)
+        write_output(papers, output_dir)
 
-    write_output(papers, output_dir)
+        if use_checkpoint:
+            cp_path = output_dir / CHECKPOINT_FILE
+            if cp_path.exists():
+                cp_path.unlink()
+                log.info("Checkpoint removed.")
 
-    if use_checkpoint:
-        cp_path = output_dir / CHECKPOINT_FILE
-        if cp_path.exists():
-            cp_path.unlink()
-            log.info("Checkpoint removed.")
-
-    log.info(f"Done. {len(papers)} papers scored.")
+        log.info(f"Done. {len(papers)} papers scored.")
+    finally:
+        usage.report(args.model)
 
 
 if __name__ == "__main__":

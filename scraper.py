@@ -312,9 +312,16 @@ def ieee_fetch_one(session: requests.Session, paper: dict) -> None:
             if resp.status_code in (429, 503):
                 time.sleep(5 * (2 ** attempt))
                 continue
-        except Exception:
+            log.debug(
+                f"Unexpected HTTP {resp.status_code} for article {article_number} "
+                f"(attempt {attempt + 1}/3)"
+            )
+        except Exception as exc:
             if attempt < 2:
                 time.sleep(2 ** attempt)
+            else:
+                log.debug(f"Could not fetch details for article {article_number}: {exc}")
+    log.debug(f"Giving up on article {article_number} after 3 attempts; detail fields left as-is.")
 
 
 # ---------------------------------------------------------------------------

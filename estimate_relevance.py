@@ -31,6 +31,7 @@ from tqdm import tqdm
 
 DEFAULT_MODEL = "claude-haiku-4-5"
 DEFAULT_WORKERS = 8
+MAX_SCORE_TOKENS = 512  # enough for a short analysis + integer; 16 was truncating preamble
 CHECKPOINT_FILE = "relevance_checkpoint.json"
 CHECKPOINT_INTERVAL = 200
 PROMPT_FILE = "PROMPT_FOR_RELEVANCE.txt"
@@ -145,7 +146,12 @@ def build_prompt(user_prompt: str, paper: dict) -> str:
 
 
 def parse_score(text: str, label: str = "") -> int:
-    m = re.search(r"\b(\d{1,3})\b", text)
+    # Prefer a number that immediately follows a score-label (e.g. "Score: 42", "42/100")
+    m = re.search(r"(?:score|relevance)[^\d]{0,10}(\d{1,3})", text, re.IGNORECASE)
+    if not m:
+        m = re.search(r"\b(\d{1,3})\s*/\s*100\b", text)
+    if not m:
+        m = re.search(r"\b(\d{1,3})\b", text)
     if m:
         return max(0, min(100, int(m.group(1))))
     log.warning(
@@ -217,7 +223,7 @@ def score_batch(
                     "custom_id": str(i),
                     "params": {
                         "model": model,
-                        "max_tokens": 16,
+                        "max_tokens": MAX_SCORE_TOKENS,
                         "messages": [
                             {
                                 "role": "user",
@@ -290,7 +296,7 @@ def score_realtime(
         try:
             resp = client.messages.create(
                 model=model,
-                max_tokens=16,
+                max_tokens=MAX_SCORE_TOKENS,
                 messages=[{"role": "user", "content": prompt}],
             )
             text = resp.content[0].text  # type: ignore[union-attr]
